@@ -5,9 +5,10 @@ const path = require('path');
 // Токен вашего бота
 const TOKEN = '7818601616:AAEXkZi0rNL8IGxheghMq8UX9PCUPtyE858';
 
+// ID канала
 const CHANNEL_ID = -1002397816296;
 
-// ID админ-чата (например, 123456789)
+// ID админ-чата
 const ADMIN_CHAT_ID = -1002368236633;
 
 // Путь к файлу с подписками
@@ -32,7 +33,16 @@ function saveSubscriptions(subscriptions) {
 // Добавляем подписку
 function addSubscription(userId, expiresAt) {
     const subscriptions = loadSubscriptions();
-    subscriptions.push({ userId, expiresAt });
+    const existingSubscription = subscriptions.find(sub => sub.userId === userId);
+
+    if (existingSubscription) {
+        // Если подписка уже есть, обновляем её срок
+        existingSubscription.expiresAt = expiresAt;
+    } else {
+        // Если подписки нет, добавляем новую
+        subscriptions.push({ userId, expiresAt });
+    }
+
     saveSubscriptions(subscriptions);
 }
 
@@ -41,6 +51,13 @@ function checkSubscription(userId) {
     const subscriptions = loadSubscriptions();
     const userSubscription = subscriptions.find(sub => sub.userId === userId);
     return userSubscription && new Date(userSubscription.expiresAt) > new Date();
+}
+
+// Получаем дату окончания подписки
+function getSubscriptionExpiresAt(userId) {
+    const subscriptions = loadSubscriptions();
+    const userSubscription = subscriptions.find(sub => sub.userId === userId);
+    return userSubscription ? new Date(userSubscription.expiresAt) : null;
 }
 
 // Удаляем подписку
@@ -70,10 +87,22 @@ async function checkSubscriptions() {
         const expiresAt = new Date(sub.expiresAt);
         const timeLeft = expiresAt - now; // Время до окончания подписки в миллисекундах
 
-        // Если до окончания подписки осталось 3 дня или меньше
-        if (timeLeft <= 3 * 24 * 60 * 60 * 1000 && timeLeft > 0) {
-            // Отправляем уведомление пользователю
-            bot.sendMessage(sub.userId, `Ваша подписка заканчивается через ${Math.ceil(timeLeft / (24 * 60 * 60 * 1000))} дней. Продлите подписку, чтобы сохранить доступ к каналу.`);
+        // Если до окончания подписки осталось 2 дня или меньше
+        if (timeLeft <= 2 * 24 * 60 * 60 * 1000 && timeLeft > 0) {
+            // Отправляем уведомление пользователю с предложением продлить подписку
+            bot.sendMessage(sub.userId, `🔔 Внимание!
+
+Ваша подписка заканчивается через ${Math.ceil(timeLeft / (24 * 60 * 60 * 1000))} дней.
+
+Продлите её заранее, чтобы сохранить доступ к закрытому каналу! 🔥💫`, {
+                reply_markup: {
+                    inline_keyboard: [
+                        [
+                            { text: '🔄 Продлить подписку', callback_data: 'renew_subscription' },
+                        ]
+                    ]
+                }
+            });
         }
 
         // Если подписка истекла
@@ -90,55 +119,174 @@ async function checkSubscriptions() {
 // Обработчик команды /start
 bot.onText(/\/start/, (msg) => {
     const chatId = msg.chat.id;
+    const userId = msg.from.id;
     const firstName = msg.from.first_name;
-    console.log(msg);
 
-    // Проверяем, есть ли у пользователя активная подписка
-    if (checkSubscription(msg.from.id)) {
+    if (checkSubscription(userId)) {
+        const expiresAt = getSubscriptionExpiresAt(userId);
+        const timeLeft = expiresAt - new Date();
 
-        bot.sendMessage(chatId, `Привет, ${firstName}! У вас уже есть активная подписка.`,  {
+        bot.sendMessage(chatId, `Привет, ${firstName}! 🎉
+
+У вас уже есть активная подписка, и она будет действовать ещё ${Math.ceil(timeLeft / (24 * 60 * 60 * 1000))} дней. Наслаждайтесь контентом! 🔥💫`, {
             reply_markup: {
                 inline_keyboard: [
                     [
                         { text: '✅ Зайти', callback_data: 'sendLink' },
+                        { text: '🔄 Продлить подписку', callback_data: 'renew_subscription' },
                     ]
                 ]
             }
         });
     } else {
-        // Отправляем инструкцию для оплаты
-        bot.sendMessage(chatId, `Привет, ${firstName}! Для доступа к каналу оплатите подписку. Стоимость: 10 USD. Переведите деньги на карту 1234 5678 9012 3456 и отправьте скриншот перевода.`);
+        // Предлагаем выбрать тип подписки
+        bot.sendMessage(chatId, `Привет! 
+Я твой бот-помощник и проведу тебя в секретный стильный клуб 🛍️
+
+Произведи оплату на карту следуя инструкциям ниже 👇`, {
+            reply_markup: {
+                inline_keyboard: [
+                    [
+                        { text: '1 месяц - 10 USD', callback_data: 'subscribe_1' },
+                        { text: '6 месяцев - 50 USD', callback_data: 'subscribe_6' },
+                    ],
+                    [
+                        { text: '1 год - 90 USD', callback_data: 'subscribe_12' },
+                    ]
+                ]
+            }
+        });
     }
 });
 
-// Обработчик сообщений с подтверждением оплаты (скриншот)
+// Обработчик callback_query (кнопки "Подтвердить", "Отклонить", выбор подписки и продление)
+bot.on('callback_query', async (query) => {
+    const chatId = query.message.chat.id;
+    const userId = query.from.id;
+    const data = query.data;
+
+    console.log(`Callback query received: ${data}`); // Логируем callback-запрос
+
+    if (data === 'sendLink') {
+        const inviteLink = await bot.createChatInviteLink(-1002397816296, {
+            member_limit: 1, // Ограничение по количеству использований
+        });
+        bot.sendMessage(chatId, inviteLink.invite_link);
+    } else if (data === 'renew_subscription') {
+        // Предлагаем выбрать тип подписки для продления
+        bot.sendMessage(chatId, `📌 Выберите тип подписки для продления:`, {
+            reply_markup: {
+                inline_keyboard: [
+                    [
+                        { text: '1 месяц - 10 USD', callback_data: 'subscribe_1' },
+                        { text: '6 месяцев - 50 USD', callback_data: 'subscribe_6' },
+                    ],
+                    [
+                        { text: '1 год - 90 USD', callback_data: 'subscribe_12' },
+                    ]
+                ]
+            }
+        });
+    } else if (data.startsWith('subscribe_')) {
+        const period = parseInt(data.split('_')[1]);
+        bot.sendMessage(chatId, `✨ Вы выбрали  подписку на ${period} месяцев✨
+
+💳 Стоимость: 1999 ₽
+
+📌 Оплата: Переведите сумму на карту 4729 7578 6687 6777
+
+📸 После оплаты отправьте скрин в чат и ожидай подтверждения`);
+    } else if (data.startsWith('approve_')) {
+        const targetUserId = parseInt(data.split('_')[1]); // ID пользователя, которого нужно подтвердить
+        const period = parseInt(data.split('_')[2]); // Период подписки
+
+        const isMember = await isUserInChannel(targetUserId);
+
+        if (isMember) {
+            const expiresAt = new Date();
+            expiresAt.setMonth(expiresAt.getMonth() + period); // Подписка на выбранный период
+            addSubscription(targetUserId, expiresAt.toISOString());
+            bot.sendMessage(targetUserId, `🎉 Готово!
+
+Вы уже в канале! Ваша подписка продлена на ${period} месяцев. Наслаждайтесь контентом! 🔥💫`);
+        } else {
+            try {
+                const inviteLink = await bot.createChatInviteLink(CHANNEL_ID, {
+                    member_limit: 1, // Ограничение по количеству использований
+                });
+                const expiresAt = new Date();
+                expiresAt.setMonth(expiresAt.getMonth() + period); // Подписка на выбранный период
+                addSubscription(targetUserId, expiresAt.toISOString());
+                bot.sendMessage(targetUserId, `🔥 Оплата подтверждена! 🔥
+
+Добро пожаловать в закрытый стильный клуб! 🛍️✨
+
+${inviteLink.invite_link}
+
+Если у тебя есть вопросы, всегда можешь написать сюда @liana_v_ch
+`);
+            } catch (error) {
+                console.error('Ошибка при одобрении заявки:', error);
+                bot.sendMessage(targetUserId, `⚠️ Что-то пошло не так…
+Мы не смогли подтвердить оплату. Проверь:
+✔️ Правильность реквизитов
+✔️ Сумму перевода
+✔️ Отправленный скрин чека
+
+Если возникли вопросы, пиши сюда - @liana_v_ch`);
+            }
+        }
+
+        // Удаляем сообщение с фото из админ-чата
+        bot.deleteMessage(chatId, query.message.message_id);
+    } else if (data.startsWith('reject_')) {
+        const targetUserId = parseInt(data.split('_')[1]);
+        bot.sendMessage(targetUserId, `⚠️ Что-то пошло не так…
+Мы не смогли подтвердить оплату. Проверь:
+✔️ Правильность реквизитов
+✔️ Сумму перевода
+✔️ Отправленный скрин чека
+
+Если возникли вопросы, пиши сюда - @liana_v_ch`);
+        bot.deleteMessage(chatId, query.message.message_id);
+    }
+
+    // Подтверждаем обработку callback_query
+    bot.answerCallbackQuery(query.id);
+});
+
+// Обработчик сообщений с фото
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from.id;
     const firstName = msg.from.first_name;
-    console.log(msg);
 
     // Проверяем, содержит ли сообщение фото (скриншот перевода)
     if (msg.photo) {
         // Пересылаем фото в админ-чат
         const photoId = msg.photo[msg.photo.length - 1].file_id; // Берем самое большое фото
-        const caption = `Пользователь ${firstName} (ID: ${userId}) отправил скриншот оплаты. Подтвердите оплату.`;
 
-        // Отправляем фото в админ-чат с кнопками "Подтвердить" и "Отклонить"
+        // Предлагаем админу выбрать период подписки
         bot.sendPhoto(ADMIN_CHAT_ID, photoId, {
-            caption: caption,
+            caption: `Пользователь ${firstName} (ID: ${userId}) отправил скриншот оплаты. Выберите период подписки:`,
             reply_markup: {
                 inline_keyboard: [
                     [
-                        { text: '✅ Подтвердить', callback_data: `approve_${userId}` },
-                        { text: '❌ Отклонить', callback_data: `reject_${userId}` }
+                        { text: '1 месяц', callback_data: `approve_${userId}_1` },
+                        { text: '6 месяцев', callback_data: `approve_${userId}_6` },
+                    ],
+                    [
+                        { text: '1 год', callback_data: `approve_${userId}_12` },
+                        { text: '❌ Отклонить', callback_data: `reject_${userId}` },
                     ]
                 ]
             }
         });
 
         // Сообщаем пользователю, что оплата проверяется
-        bot.sendMessage(chatId, 'Спасибо! Ваш платеж отправлен на проверку. Ожидайте подтверждения.');
+        bot.sendMessage(chatId, `💳 Спасибо!
+
+Ваш платеж отправлен на проверку. Ожидайте подтверждения — скоро всё будет готово! ⏳✨`);
     }
 });
 
@@ -153,75 +301,9 @@ async function isUserInChannel(userId) {
     }
 }
 
-// Обработчик callback_query (кнопки "Подтвердить" и "Отклонить")
-bot.on('callback_query', async (query) => {
-    const chatId = query.message.chat.id;
-    const userId = parseInt(query.data.split('_')[1]); // Извлекаем ID пользователя
-    const action = query.data.split('_')[0]; // Извлекаем действие (approve или reject)
-    console.log(query)
-    if(query.data == 'sendLink') {
-        const inviteLink = await bot.createChatInviteLink(CHANNEL_ID, { 
-            member_limit: 1, // Ограничение по количеству использований
-        });
-        bot.sendMessage(chatId, inviteLink.invite_link);
-    }
-    if (action === 'approve') {
-        // Проверяем, является ли пользователь уже участником канала
-        const isMember = await isUserInChannel(userId);
-        if (isMember) {
-            // Если пользователь уже в канале, просто активируем подписку
-            const expiresAt = new Date();
-            expiresAt.setMonth(expiresAt.getMonth() + 1); // Подписка на 1 месяц
-            addSubscription(userId, expiresAt.toISOString());
-
-            bot.sendMessage(userId, 'Вы уже находитесь в канале! Подписка продлена');
-        } else {
-            // Если пользователь не в канале, одобряем заявку
-            try {
-                const inviteLink = await bot.createChatInviteLink(CHANNEL_ID, { 
-                    member_limit: 1, // Ограничение по количеству использований
-                });
-                bot.sendMessage(userId, inviteLink.invite_link);
-                const expiresAt = new Date();
-                expiresAt.setMonth(expiresAt.getMonth() + 1); // Подписка на 1 месяц
-                addSubscription(userId, expiresAt.toISOString());
-
-                bot.sendMessage(userId, 'Ваша подписка активирована! Теперь вы можете войти в канал.');
-            } catch (error) {
-                console.error('Ошибка при одобрении заявки:', error);
-                bot.sendMessage(userId, 'Произошла ошибка. Пожалуйста, свяжитесь с поддержкой.');
-            }
-        }
-
-        // Удаляем сообщение с фото из админ-чата
-        bot.deleteMessage(chatId, query.message.message_id);
-    } else if (action === 'reject') {
-        // Отклоняем оплату
-        bot.sendMessage(userId, 'Ваш платеж отклонен. Пожалуйста, свяжитесь с поддержкой.');
-
-        // Удаляем сообщение с фото из админ-чата
-        bot.deleteMessage(chatId, query.message.message_id);
-    }
-
-    // Подтверждаем обработку callback_query
-    bot.answerCallbackQuery(query.id);
-});
-
 // Обработчик ошибок
 bot.on('polling_error', (error) => {
     console.error('Ошибка polling:', error);
-});
-
-bot.on('group_chat_created', (msg) => {
-    console.log(msg);
-});
-
-bot.on('channel_chat_created', (msg) => {
-    console.log(msg);
-});
-
-bot.on('chat_join_request', (msg) => {
-    console.log(msg);
 });
 
 // Периодическая проверка подписок (раз в день)
